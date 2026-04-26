@@ -27,4 +27,6 @@ contextBridge.exposeInMainWorld('bugbounty', {
   updateProjectStatus: (id, status) => ipcRenderer.invoke('bb:updateProjectStatus', { id, status }),
   getProjectDir: (name) => ipcRenderer.invoke('bb:getProjectDir', { name }),
   generateReport: (name) => ipcRenderer.invoke('bb:generateReport', { name }),
+  getProjectDetails: (name) => ipcRenderer.invoke('bb:getProjectDetails', { name }),
+  saveProjectDetails: (name, details) => ipcRenderer.invoke('bb:saveProjectDetails', { name, details })
 });

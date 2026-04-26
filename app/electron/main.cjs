@@ -48,8 +48,8 @@ app.whenReady().then(createWindow);
 ipcMain.on("pty:start", (_event, { cols, rows, cwd } = {}) => {
   if (shellPty) return;
 
-  const shell = process.env.SHELL || "bash";
-  const startCwd = cwd || process.env.HOME;
+  const shell = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : 'bash');
+  const startCwd = cwd || (process.platform === 'win32' ? process.env.USERPROFILE : process.env.HOME);
   
   sessionContext.cwd = startCwd;
 
@@ -78,16 +78,19 @@ ipcMain.on("pty:start", (_event, { cols, rows, cwd } = {}) => {
       return;
     }
 
-    const promptPattern = /\$\s*$|#\s*$/m;
+    const promptPattern = /\$\s*$|#\s*$|>\s*$/m;
     if (promptPattern.test(clean)) {
-      // Extract CWD from prompt e.g. "user@host:~/Documents$"
+      // Extract CWD from prompt e.g. "user@host:~/Documents$" or PowerShell "PS C:\>"
       const cwdMatch = clean.match(/:([~\/][^\$#]*)\s*[\$#]/);
+      const psMatch = clean.match(/PS\s+([A-Za-z]:\\[^>]*?)>/);
       if (cwdMatch) {
         let cwd = cwdMatch[1].trim();
         if (cwd.startsWith('~')) {
           cwd = cwd.replace('~', process.env.HOME || '/home/' + process.env.USER);
         }
         sessionContext.cwd = cwd;
+      } else if (psMatch) {
+        sessionContext.cwd = psMatch[1].trim();
       }
 
       if (skipOnePrompt) {
@@ -153,9 +156,8 @@ ipcMain.on('pty:write', (_event, data) => {
     // This is the exact line that means @ queries NEVER touch the shell —
     // they are caught here in the Electron main process before node-pty sees them.
     if (cmd.startsWith('@') || cmd.startsWith('#')) {
-      // Erase the typed prefix line from the terminal display — it never reached the shell
-      mainWindow.webContents.send('pty:data', '\r\x1B[2K\r\n');
-      shellPty.write('\r'); // send a blank Enter to keep the shell prompt clean
+      // Cancel the command in the shell so it doesn't execute the AI query natively
+      shellPty.write('\x03'); 
 
       // Route the input to the renderer's AI handler, NOT to the PTY
       mainWindow.webContents.send('ai:query', {
@@ -170,6 +172,15 @@ ipcMain.on('pty:write', (_event, data) => {
       });
       sessionContext.currentCommand = '';
       return; // ← hard stop: the PTY never sees this input
+    }
+
+    // Intercept clear/cls to bypass Windows conpty visual bugs
+    if (cmd.toLowerCase() === 'clear' || cmd.toLowerCase() === 'cls') {
+      mainWindow.webContents.send('pty:data', '\x1b[2K\r'); // clear current line
+      mainWindow.webContents.send('pty:data', '\x1b[2J\x1b[3J\x1b[H'); // full screen clear + scrollback wipe
+      shellPty.write('\x03'); // send CTRL+C to shell to spawn a fresh prompt at the top
+      sessionContext.currentCommand = '';
+      return;
     }
 
     // Store command for context BEFORE clearing
@@ -251,3 +262,5 @@ ipcMain.handle('bb:createProject', (_event, { name, scopeStr }) => bbStore.creat
 ipcMain.handle('bb:updateProjectStatus', (_event, { id, status }) => bbStore.updateProjectStatus(id, status));
 ipcMain.handle('bb:getProjectDir', (_event, { name }) => bbStore.getProjectDir(name));
 ipcMain.handle('bb:generateReport', (_event, { name }) => bbStore.generateReport(name));
+ipcMain.handle('bb:getProjectDetails', (_event, { name }) => bbStore.getProjectDetails(name));
+ipcMain.handle('bb:saveProjectDetails', (_event, { name, details }) => bbStore.saveProjectDetails(name, details));

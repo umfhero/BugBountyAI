@@ -4,8 +4,24 @@
 const fs = require('fs');
 const path = require('path');
 
-const OLLAMA_URL = 'http://localhost:11434/api/generate';
-const MODEL = 'llama3.2';
+const OLLAMA_URL = 'http://127.0.0.1:11434/api/generate';
+const OLLAMA_TAGS_URL = 'http://127.0.0.1:11434/api/tags';
+
+async function getAvailableModel() {
+  try {
+    const response = await fetch(OLLAMA_TAGS_URL);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.models && data.models.length > 0) {
+        const llama = data.models.find(m => m.name.includes('llama'));
+        return llama ? llama.name : data.models[0].name;
+      }
+    }
+  } catch (e) {
+    // ollama not running or reachable
+  }
+  return 'llama3.2'; // default fallback
+}
 
 // Assembles the full prompt string that gets sent to Ollama.
 // This is where the structured context object from Area 1 is injected into
@@ -76,13 +92,14 @@ Only return JSON. No markdown, no extra text.`;
 
 async function queryOllama(prompt) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  const timeout = setTimeout(() => controller.abort(), 180000); // 3 minutes timeout for slower hardware
 
   try {
+    const targetModel = await getAvailableModel();
     const response = await fetch(OLLAMA_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, prompt, stream: false }),
+      body: JSON.stringify({ model: targetModel, prompt, stream: false }),
       signal: controller.signal
     });
     clearTimeout(timeout);
@@ -159,10 +176,11 @@ Only return JSON. No markdown, no extra text.`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60000);
 
+    const targetModel = await getAvailableModel();
     const response = await fetch(OLLAMA_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, prompt, stream: false, format: 'json' }),
+      body: JSON.stringify({ model: targetModel, prompt, stream: false, format: 'json' }),
       signal: controller.signal
     });
     clearTimeout(timeout);

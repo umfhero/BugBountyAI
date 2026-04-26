@@ -227,6 +227,20 @@
   word-break: break-word;
 }
 
+.bb-target-card__progress-container {
+  height: 4px;
+  background: rgba(255, 193, 7, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: -0.2rem;
+  margin-bottom: 0.2rem;
+}
+
+.bb-progress-bar {
+  height: 100%;
+  transition: width 0.4s ease, background-color 0.4s ease;
+}
+
 .bb-target-card__meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -304,6 +318,21 @@
   color: #d6bf73;
   background: rgba(20, 20, 20, 0.9);
   white-space: nowrap;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.bb-status option {
+  background: #141414;
+  color: #f5f5f5;
+}
+
+.bb-status--danger {
+  border-color: rgba(243, 89, 114, 0.5);
+  color: #ff9b9b;
+  background: rgba(74, 20, 31, 0.55);
 }
 
 .bb-status--active {

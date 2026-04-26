@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import Dashboard, { type Project } from './Dashboard'
+import ProjectDetails from './ProjectDetails'
 import 'xterm/css/xterm.css'
 
 interface AiResult {
@@ -99,6 +100,9 @@ export default function App() {
   })
   
   const [activeProject, setActiveProject] = useState<{ project: Project; dir: string } | null>(null)
+  const [workspaceTab, setWorkspaceTab] = useState<'terminal' | 'details'>('terminal')
+  const [viewMode, setViewMode] = useState(false)
+  const [saveTrigger, setSaveTrigger] = useState(0)
   
   const setAndSaveLayout = (l: 'right' | 'left' | 'top' | 'bottom') => {
     setLayout(l)
@@ -130,6 +134,13 @@ export default function App() {
       window.pty.start(term.cols, term.rows, activeProject.dir)
       window.pty.onData((data: string) => term.write(data))
       term.onData((data: string) => window.pty.write(data))
+      
+      term.onResize(({ cols, rows }) => {
+        window.pty.resize(cols, rows)
+      })
+
+      const handleResize = () => fit.fit()
+      window.addEventListener('resize', handleResize)
     })
 
     // Right-click context menu on selected text
@@ -139,6 +150,19 @@ export default function App() {
       if (!selection) return
       setContextMenu({ x: e.clientX, y: e.clientY, text: selection })
     })
+
+    // Allow Ctrl+C to copy if text is selected
+    term.attachCustomKeyEventHandler((arg) => {
+      if (arg.ctrlKey && arg.code === 'KeyC' && arg.type === 'keydown') {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection);
+          term.clearSelection();
+          return false; // Prevent sending ^C to terminal
+        }
+      }
+      return true;
+    });
 
     const dismissMenu = () => setContextMenu(null)
     window.addEventListener('click', dismissMenu)
@@ -165,7 +189,7 @@ export default function App() {
         if (res.success) {
           setPanel({ type: 'explanation', data: res.data as AiResult, command: ctx.currentCommand, risk: res.risk || { tier: 'SAFE' } })
         } else {
-          setPanel({ type: 'error', message: 'Ollama failed to respond.' })
+          setPanel({ type: 'error', message: res.error || 'Ollama failed to respond.' })
         }
       }).catch(() => setPanel({ type: 'error', message: 'Could not reach Ollama.' }))
     })
@@ -180,7 +204,7 @@ export default function App() {
           if (res.success) {
             setPanel({ type: 'explanation', data: res.data as AiResult, command: payload.input, risk: res.risk || { tier: 'SAFE' } })
           } else {
-            setPanel({ type: 'error', message: 'Ollama failed to respond.' })
+            setPanel({ type: 'error', message: res.error || 'Ollama failed to respond.' })
           }
         }).catch(() => {
           prefixActiveRef.current = false
@@ -192,7 +216,7 @@ export default function App() {
           if (res.success) {
             setPanel({ type: 'script', data: res.data as ScriptResult, request: payload.input, risk: res.risk || { tier: 'SAFE' } })
           } else {
-            setPanel({ type: 'error', message: 'Script generation failed.' })
+            setPanel({ type: 'error', message: res.error || 'Script generation failed.' })
           }
         }).catch(() => {
           prefixActiveRef.current = false
@@ -240,7 +264,7 @@ export default function App() {
       if (res.success) {
         setPanel({ type: 'explanation', data: res.data as AiResult, command: text, risk: res.risk || { tier: 'SAFE' } })
       } else {
-        setPanel({ type: 'error', message: 'Ollama failed to respond.' })
+        setPanel({ type: 'error', message: res.error || 'Ollama failed to respond.' })
       }
     }).catch(() => setPanel({ type: 'error', message: 'Could not reach Ollama.' }))
   }
@@ -353,34 +377,69 @@ export default function App() {
   )
 
   if (!activeProject) {
-    return <Dashboard onSelectProject={(project, dir) => setActiveProject({ project, dir })} />;
+    return <Dashboard onSelectProject={(project, dir) => { setActiveProject({ project, dir }); setWorkspaceTab('terminal'); }} onOpenDetails={(project) => { setActiveProject({ project, dir: '' }); setWorkspaceTab('details'); }} />;
   }
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: layout === 'top' ? 'column-reverse' : layout === 'bottom' ? 'column' : layout === 'left' ? 'row-reverse' : 'row',
-      height: '100vh',
-      background: 'linear-gradient(165deg, #0a0a0a 0%, #111111 100%)',
-      color: '#f5f5f5',
-      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-      overflow: 'hidden'
-    }}>
-      {/* Terminal Panel */}
-      <div style={{ flex: 1, padding: '10px', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-          <div style={{ fontSize: '10px', color: '#d6bf73', paddingLeft: '4px', letterSpacing: '0.1em' }}>
-            TERMINAL — {activeProject.project.name}
-          </div>
-          <button 
-            onClick={() => setActiveProject(null)} 
-            style={{ background: 'rgba(255, 193, 7, 0.08)', border: '1px solid rgba(255, 193, 7, 0.2)', color: '#ffe082', fontSize: '10px', padding: '3px 8px', borderRadius: '4px', cursor: 'pointer' }}
-          >
-            Back To Dashboard
+    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#0a0a0a', color: '#f5f5f5', fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}>
+      
+      {/* SIDEBAR */}
+      <div style={{ width: '60px', background: '#0a0a0a', borderRight: '1px solid rgba(255,193,7,0.15)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '15px 0', gap: '20px', zIndex: 100 }}>
+        <button onClick={() => setActiveProject(null)} style={{ background: 'transparent', border: 'none', color: '#ffc107', cursor: 'pointer', padding: '10px' }} title="Back to Dashboard">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        </button>
+        <div style={{ width: '30px', height: '1px', background: 'rgba(255,193,7,0.1)' }} />
+        <button onClick={() => setWorkspaceTab('terminal')} style={{ background: 'transparent', border: 'none', color: workspaceTab === 'terminal' ? '#ffc107' : '#666', cursor: 'pointer', padding: '10px' }} title="Terminal Workspace">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        </button>
+        <button onClick={() => setWorkspaceTab('details')} style={{ background: 'transparent', border: 'none', color: workspaceTab === 'details' ? '#ffc107' : '#666', cursor: 'pointer', padding: '10px' }} title="Target Details / Report">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+        </button>
+
+        {workspaceTab === 'details' && (
+          <>
+            <div style={{ width: '30px', height: '1px', background: 'rgba(255,193,7,0.1)' }} />
+            <button onClick={() => setViewMode(!viewMode)} style={{ background: 'transparent', border: 'none', color: viewMode ? '#ffc107' : '#666', cursor: 'pointer', padding: '10px' }} title={viewMode ? "Switch to Edit Mode" : "Switch to View Mode"}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+            </button>
+            <button onClick={() => setSaveTrigger(t => t + 1)} style={{ background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', padding: '10px' }} title="Force Save Details">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+            </button>
+          </>
+        )}
+
+        {workspaceTab === 'terminal' && (
+          <button onClick={() => setReconActive(!reconActive)} style={{ background: 'transparent', border: 'none', color: reconActive ? '#ffc107' : '#666', cursor: 'pointer', padding: '10px', marginTop: 'auto' }} title="Toggle Autonomous Recon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>
           </button>
-        </div>
-        <div ref={termRef} style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }} />
+        )}
       </div>
+
+      {/* WORKSPACE AREA */}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        
+        {/* Terminal/AI Panel (Hidden when viewing details, but kept mounted to preserve xterm state) */}
+        <div style={{
+          display: 'flex',
+          flexDirection: layout === 'top' ? 'column-reverse' : layout === 'bottom' ? 'column' : layout === 'left' ? 'row-reverse' : 'row',
+          height: '100%',
+          width: '100%',
+          position: workspaceTab === 'terminal' ? 'relative' : 'absolute',
+          opacity: workspaceTab === 'terminal' ? 1 : 0,
+          pointerEvents: workspaceTab === 'terminal' ? 'auto' : 'none',
+          inset: 0
+        }}>
+      {/* Terminal Panel */}
+        <div style={{ flex: 1, padding: '10px', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+            <div style={{ fontSize: '10px', color: '#d6bf73', paddingLeft: '4px', letterSpacing: '0.1em' }}>
+              TERMINAL — {activeProject.project.name}
+            </div>
+            {/* Auto Mode indicator */}
+            {reconActive && <div style={{ fontSize: '10px', color: '#ffc107', padding: '3px 8px', borderRadius: '4px', background: 'rgba(255,193,7,0.1)' }}>AUTONOMOUS RECON ACTIVE</div>}
+          </div>
+          <div ref={termRef} style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }} />
+        </div>
 
       {/* Divider */}
       <div style={{ [isHorizontal ? 'width' : 'height']: '1px', background: 'rgba(255, 193, 7, 0.15)', flexShrink: 0 }} />
@@ -524,6 +583,7 @@ export default function App() {
           )}
         </div>
       </div>
+      </div>
 
       {contextMenu && (
         <div style={{
@@ -538,6 +598,23 @@ export default function App() {
           minWidth: '160px',
           boxShadow: '0 8px 24px rgba(0,0,0,0.5)'
         }}>
+          <div
+            onClick={() => {
+              navigator.clipboard.writeText(contextMenu.text);
+              setContextMenu(null);
+            }}
+            style={{
+              padding: '6px 14px',
+              fontSize: '12px',
+              color: '#ffe082',
+              cursor: 'pointer',
+              fontFamily: 'monospace'
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255, 193, 7, 0.15)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >
+            Copy to clipboard
+          </div>
           <div
             onClick={() => askAboutSelection(contextMenu.text)}
             style={{
@@ -554,6 +631,14 @@ export default function App() {
           </div>
         </div>
       )}
+      
+      {/* Details Overlay */}
+      {workspaceTab === 'details' && (
+        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(165deg, #0a0a0a 0%, #111111 100%)', overflow: 'auto', zIndex: 10 }}>
+          <ProjectDetails project={activeProject.project} viewMode={viewMode} saveTrigger={saveTrigger} />
+        </div>
+      )}
+      </div>
     </div>
   )
 }

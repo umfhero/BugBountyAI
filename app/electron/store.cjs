@@ -105,6 +105,22 @@ function generateReport(name) {
   }
 }
 
+function getProjectDetails(name) {
+  const projectDir = getProjectDir(name);
+  const detailsFile = path.join(projectDir, 'details.json');
+  if (fs.existsSync(detailsFile)) {
+    return JSON.parse(fs.readFileSync(detailsFile, 'utf-8'));
+  }
+  return { description: '', submission: '', notes: '' };
+}
+
+function saveProjectDetails(name, details) {
+  const projectDir = getProjectDir(name);
+  const detailsFile = path.join(projectDir, 'details.json');
+  fs.writeFileSync(detailsFile, JSON.stringify(details, null, 2), 'utf-8');
+  return { success: true };
+}
+
 module.exports = {
   APP_DIR,
   getProjects,
@@ -112,5 +128,7 @@ module.exports = {
   createProject,
   updateProjectStatus,
   getProjectDir,
-  generateReport
+  generateReport,
+  getProjectDetails,
+  saveProjectDetails
 };

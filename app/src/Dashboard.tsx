@@ -11,9 +11,10 @@ export interface Project {
 
 interface DashboardProps {
   onSelectProject: (project: Project, path: string) => void;
+  onOpenDetails: (project: Project) => void;
 }
 
-export default function Dashboard({ onSelectProject }: DashboardProps) {
+export default function Dashboard({ onSelectProject, onOpenDetails }: DashboardProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
@@ -43,24 +44,40 @@ export default function Dashboard({ onSelectProject }: DashboardProps) {
     onSelectProject(p, dir);
   };
 
-  const handleGenerateReport = async (p: Project) => {
-    const res = await (window as any).bugbounty.generateReport(p.name);
-    if (res.success) {
-      alert(`Report generated at:\n${res.reportPath}`);
-    } else {
-      alert('Failed to generate report: ' + res.error);
-    }
+  // Handle details is now passed up
+
+
+  const handleStatusChange = async (p: Project, newStatus: string) => {
+    await (window as any).bugbounty.updateProjectStatus(p.id, newStatus);
+    loadProjects();
   };
 
-  const totalAssets = projects.reduce((sum, project) => sum + project.scope.domains.length, 0);
-  const activeProjects = projects.filter((project) => project.status.toLowerCase().includes('active')).length;
+  const submittedCount = projects.filter(p => p.status.toLowerCase() === 'submitted').length;
+  const acceptedCount = projects.filter(p => p.status.toLowerCase() === 'accepted').length;
+  const writeupCount = projects.filter(p => p.status.toLowerCase() === 'writeup').length;
 
   const getStatusTone = (status: string) => {
     const normalized = status.toLowerCase();
-    if (normalized.includes('active')) return 'active';
-    if (normalized.includes('paused')) return 'paused';
-    if (normalized.includes('complete')) return 'complete';
-    return 'queued';
+    if (normalized === 'recon') return 'active';
+    if (normalized === 'submitted') return 'queued';
+    if (normalized === 'accepted') return 'complete';
+    if (normalized === 'rejected') return 'danger';
+    return 'paused';
+  };
+
+  const getProgress = (status: string) => {
+    const s = status.toLowerCase();
+    if (s === 'recon') return 33;
+    if (s === 'submitted') return 66;
+    if (s === 'accepted' || s === 'rejected' || s === 'writeup') return 100;
+    return 0;
+  };
+
+  const getProgressColor = (status: string) => {
+    const s = status.toLowerCase();
+    if (s === 'accepted') return '#0a8f83';
+    if (s === 'rejected') return '#f35972';
+    return '#ffc107';
   };
 
   return (
@@ -97,15 +114,15 @@ export default function Dashboard({ onSelectProject }: DashboardProps) {
         </article>
         <article className="bb-metric-card">
           <span className="bb-metric-card__label">Submitted Bug Bounties</span>
-          <strong className="bb-metric-card__value">0</strong>
+          <strong className="bb-metric-card__value">{submittedCount}</strong>
         </article>
         <article className="bb-metric-card">
           <span className="bb-metric-card__label">Accepted Bug Bounties</span>
-          <strong className="bb-metric-card__value">0</strong>
+          <strong className="bb-metric-card__value">{acceptedCount}</strong>
         </article>
         <article className="bb-metric-card">
           <span className="bb-metric-card__label">Writeups</span>
-          <strong className="bb-metric-card__value">0</strong>
+          <strong className="bb-metric-card__value">{writeupCount}</strong>
         </article>
       </section>
 
@@ -156,9 +173,24 @@ export default function Dashboard({ onSelectProject }: DashboardProps) {
           <article key={p.id} className="bb-target-card">
             <div className="bb-target-card__header">
               <h3>{p.name}</h3>
-              <span className={`bb-status bb-status--${getStatusTone(p.status)}`}>
-                {p.status}
-              </span>
+              <select
+                className={`bb-status bb-status--${getStatusTone(p.status)}`}
+                value={p.status}
+                onChange={(e) => handleStatusChange(p, e.target.value)}
+              >
+                <option value="Recon">Recon</option>
+                <option value="Submitted">Submitted</option>
+                <option value="Accepted">Accepted</option>
+                <option value="Rejected">Rejected</option>
+                <option value="Writeup">Writeup</option>
+              </select>
+            </div>
+
+            <div className="bb-target-card__progress-container" title={`${getProgress(p.status)}% Complete`}>
+              <div 
+                className="bb-progress-bar" 
+                style={{ width: `${getProgress(p.status)}%`, backgroundColor: getProgressColor(p.status) }} 
+              />
             </div>
 
             <div className="bb-target-card__meta">
@@ -189,10 +221,10 @@ export default function Dashboard({ onSelectProject }: DashboardProps) {
               </button>
 
               <button
-                onClick={() => handleGenerateReport(p)}
+                onClick={() => onOpenDetails(p)}
                 className="bb-button bb-button--secondary"
               >
-                Generate Report
+                Details
               </button>
             </div>
           </article>
