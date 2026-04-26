@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Recon Loop — Bug Bounty</title>
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&f[]=jet-brains-mono@400,700&display=swap" rel="stylesheet">
+<style>
+/* ─── Design Tokens ─── */
+:root {
+  --font-body: 'Satoshi', 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  --text-xs: clamp(0.75rem, 0.7rem + 0.25vw, 0.875rem);
+  --text-sm: clamp(0.875rem, 0.8rem + 0.35vw, 1rem);
+  --text-base: clamp(1rem, 0.95rem + 0.25vw, 1.125rem);
+  --text-lg: clamp(1.125rem, 1rem + 0.75vw, 1.5rem);
+  --text-xl: clamp(1.5rem, 1.2rem + 1.25vw, 2.25rem);
+
+  --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem;
+  --space-4: 1rem; --space-5: 1.25rem; --space-6: 1.5rem;
+  --space-8: 2rem; --space-10: 2.5rem; --space-12: 3rem;
+  --space-16: 4rem;
+
+  --radius-sm: 0.375rem; --radius-md: 0.5rem;
+  --radius-lg: 0.75rem; --radius-xl: 1rem; --radius-full: 9999px;
+  --transition: 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #1c2128;
+  --surface-3: #22272e;
+  --border: rgba(255,255,255,0.08);
+  --text: #e6edf3;
+  --text-muted: #7d8590;
+  --text-faint: #484f58;
+  --green: #3fb950;
+  --green-dim: #1a3426;
+  --green-glow: rgba(63,185,80,0.15);
+  --yellow: #d29922;
+  --yellow-dim: #2e2514;
+  --yellow-glow: rgba(210,153,34,0.15);
+  --red: #f85149;
+  --red-dim: #3d1a19;
+  --red-glow: rgba(248,81,73,0.12);
+  --blue: #388bfd;
+  --blue-dim: #0c1f3f;
+  --blue-glow: rgba(56,139,253,0.15);
+  --purple: #bc8cff;
+  --purple-dim: #2a1f40;
+  --purple-glow: rgba(188,140,255,0.15);
+  --orange: #e3b341;
+  --orange-dim: #2c2212;
+  --shadow-lg: 0 16px 48px rgba(0,0,0,0.5);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+body {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+  line-height: 1.6;
+  padding: var(--space-8) var(--space-4);
+}
+
+/* ─── Layout ─── */
+.page { max-width: 960px; margin: 0 auto; }
+
+header {
+  display: flex; align-items: center; gap: var(--space-4);
+  margin-bottom: var(--space-10);
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid var(--border);
+}
+.logo {
+  display: flex; align-items: center; gap: var(--space-3);
+}
+.logo svg { flex-shrink: 0; }
+.logo-text { font-size: var(--text-lg); font-weight: 700; letter-spacing: -0.02em; }
+.logo-sub { font-size: var(--text-xs); color: var(--text-muted); font-family: var(--font-mono); }
+
+/* ─── Flow Container ─── */
+.flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+/* ─── Nodes ─── */
+.node {
+  width: 100%;
+  max-width: 680px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: var(--space-5) var(--space-6);
+  position: relative;
+  cursor: default;
+  transition: box-shadow var(--transition), border-color var(--transition), transform var(--transition);
+}
+.node:hover {
+  transform: translateY(-1px);
+}
+
+.node--start { border-color: rgba(63,185,80,0.4); background: color-mix(in oklab, var(--green) 6%, var(--surface)); }
+.node--start:hover { box-shadow: 0 0 0 1px var(--green), var(--shadow-lg); }
+
+.node--recon { border-color: rgba(56,139,253,0.4); background: color-mix(in oklab, var(--blue) 6%, var(--surface)); }
+.node--recon:hover { box-shadow: 0 0 0 1px var(--blue), var(--shadow-lg); }
+
+.node--save { border-color: rgba(210,153,34,0.4); background: color-mix(in oklab, var(--yellow) 6%, var(--surface)); }
+.node--save:hover { box-shadow: 0 0 0 1px var(--yellow), var(--shadow-lg); }
+
+.node--suggest { border-color: rgba(188,140,255,0.4); background: color-mix(in oklab, var(--purple) 6%, var(--surface)); }
+.node--suggest:hover { box-shadow: 0 0 0 1px var(--purple), var(--shadow-lg); }
+
+.node--predict { border-color: rgba(248,81,73,0.6); background: color-mix(in oklab, var(--red) 8%, var(--surface)); }
+.node--predict:hover { box-shadow: 0 0 0 1px var(--red), var(--shadow-lg); }
+
+.node--exec { border-color: rgba(63,185,80,0.4); background: color-mix(in oklab, var(--green) 6%, var(--surface)); }
+.node--exec:hover { box-shadow: 0 0 0 1px var(--green), var(--shadow-lg); }
+
+.node--flag { border-color: rgba(227,179,65,0.5); background: color-mix(in oklab, var(--orange) 8%, var(--surface)); }
+.node--flag:hover { box-shadow: 0 0 0 1px var(--orange), var(--shadow-lg); }
+
+.node--loop {
+  border-color: rgba(56,139,253,0.3);
+  background: color-mix(in oklab, var(--blue) 4%, var(--surface));
+  border-style: dashed;
+  text-align: center;
+}
+
+/* ─── Node internals ─── */
+.node-header {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.node-badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.badge-green { background: var(--green-dim); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+.badge-blue { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(56,139,253,0.3); }
+.badge-yellow { background: var(--yellow-dim); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+.badge-purple { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(188,140,255,0.3); }
+.badge-red { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+.badge-orange { background: var(--orange-dim); color: var(--orange); border: 1px solid rgba(227,179,65,0.3); }
+
+.node-title {
+  font-size: var(--text-base);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.node-desc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+  max-width: 60ch;
+}
+
+/* ─── Tag pills ─── */
+.tags { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+/* ─── Predict cards ─── */
+.predict-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+@media (max-width: 600px) { .predict-grid { grid-template-columns: 1fr; } }
+
+.predict-card {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  font-size: var(--text-xs);
+}
+.predict-card--safe { background: var(--green-dim); border-color: rgba(63,185,80,0.25); }
+.predict-card--warn { background: var(--yellow-dim); border-color: rgba(210,153,34,0.25); }
+.predict-card--skip { background: var(--red-dim); border-color: rgba(248,81,73,0.2); }
+
+.predict-card-label {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-weight: 700; margin-bottom: var(--space-1);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+.dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+
+/* ─── Arrows ─── */
+.arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  z-index: 1;
+}
+.arrow-line {
+  width: 2px;
+  height: 36px;
+  background: linear-gradient(to bottom, var(--border), rgba(255,255,255,0.15));
+}
+.arrow-head {
+  width: 0; height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 9px solid rgba(255,255,255,0.2);
+}
+.arrow-label {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: calc(100% + 10px);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  background: var(--surface-2);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+}
+
+/* ─── Loop back path ─── */
+.loop-back {
+  width: 100%;
+  max-width: 680px;
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  margin: 0;
+}
+.loop-back-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+/* Side loop pipe */
+.loop-pipe-wrap {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 680px;
+  position: relative;
+  pointer-events: none;
+}
+.loop-pipe {
+  position: absolute;
+  right: -44px;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  border: 2px dashed rgba(56,139,253,0.35);
+  border-left: none;
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+}
+.loop-label-wrap {
+  position: absolute;
+  right: -100px;
+  top: 50%;
+  transform: translateY(-50%) rotate(90deg);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--blue);
+  white-space: nowrap;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Context Bubble ─── */
+.context-bubble {
+  background: var(--surface-2);
+  border: 1px dashed rgba(210,153,34,0.3);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-3);
+  max-width: 460px;
+}
+.context-bubble-icon { font-size: 1.1rem; flex-shrink: 0; }
+
+/* ─── Section divider label ─── */
+.phase-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: var(--space-2) 0;
+  align-self: flex-start;
+  padding-left: 0;
+  max-width: 680px;
+  width: 100%;
+}
+
+/* ─── Legend ─── */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-6);
+  margin-top: var(--space-10);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+.legend-item {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); color: var(--text-muted);
+}
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+/* ─── Pulse animation on predict node ─── */
+@keyframes pulse-ring {
+  0%,100% { box-shadow: 0 0 0 0 rgba(248,81,73,0.0), var(--shadow-lg); }
+  50% { box-shadow: 0 0 0 6px rgba(248,81,73,0.12), var(--shadow-lg); }
+}
+.node--predict { animation: pulse-ring 3s ease-in-out infinite; }
+
+/* Scroll reveal */
+.fade-in { opacity: 1; }
+@supports (animation-timeline: scroll()) {
+  .fade-in {
+    opacity: 0;
+    animation: revealFade linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 100%;
+  }
+}
+@keyframes revealFade { to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .node--predict { animation: none; }
+  .fade-in { animation: none; opacity: 1; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-label="AI Recon Loop">
+        <rect width="36" height="36" rx="8" fill="#161b22" stroke="rgba(63,185,80,0.4)" stroke-width="1.5"/>
+        <circle cx="18" cy="18" r="8" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="3 2"/>
+        <path d="M18 10 L18 8 M18 28 L18 26 M10 18 L8 18 M26 18 L28 18" stroke="#3fb950" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="18" cy="18" r="3" fill="#3fb950"/>
+      </svg>
+      <div>
+        <div class="logo-text">AI Recon Loop</div>
+        <div class="logo-sub">Bug Bounty · Autonomous Recon Pipeline</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Flow -->
+  <div class="flow">
+
+    <!-- PHASE: INIT -->
+    <div class="phase-label fade-in">Phase 1 — Initialise</div>
+
+    <div class="node node--start fade-in" style="text-align:center; max-width:320px;">
+      <div class="node-header" style="justify-content:center;">
+        <span class="node-badge badge-green">START</span>
+        <span class="node-title">Define Target Scope</span>
+      </div>
+      <div class="node-desc" style="margin:0 auto;">Domain, IP range, programme scope rules, out-of-scope assets.</div>
+    </div>
+
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <!-- PHASE: RECON -->
+    <div class="phase-label fade-in">Phase 2 — Passive &amp; Active Recon</div>
+
+    <div class="node node--recon fade-in">
+      <div class="node-header">
+        <span class="node-badge badge-blue">RECON</span>
+        <span class="node-title">Basic Recon Sweep</span>
+      </div>
+      <div class="node-desc">AI executes a controlled initial sweep. Tools are scope-checked before running.</div>
+      <div class="tags">
+        <span class="tag">subfinder</span>
+        <span class="tag">amass</span>
+        <span class="tag">nmap -sV</span>
+        <span class="tag">whatweb</span>
+        <span class="tag">wafw00f</span>
+        <span class="tag">httpx</span>
+        <span class="tag">whois</span>
+        <span class="tag">shodan</span>
+        <span class="tag">theHarvester</span>
+      </div>
+    </div>
+
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <!-- SAVE -->
+    <div class="node node--save fade-in">
+      <div class="node-header">
+        <span class="node-badge badge-yellow">SAVE</span>
+        <span class="node-title">Persist Output → project/recon/</span>
+      </div>
+      <div class="node-desc">All tool output is written to structured files. These become the permanent context window for this project.</div>
+      <div class="tags">
+        <span class="tag">project/recon/subdomains.txt</span>
+        <span class="tag">project/recon/ports.json</span>
+        <span class="tag">project/recon/tech-stack.md</span>
+        <span class="tag">project/recon/urls.txt</span>
+        <span class="tag">project/recon/notes.md</span>
+      </div>
+      <div class="context-bubble">
+        <span class="context-bubble-icon">🧠</span>
+        <span>AI loads <code style="color:var(--yellow)">project/recon/</code> as context on every loop iteration — accumulated intelligence grows over time.</span>
+      </div>
+    </div>
+
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <!-- SUGGEST -->
+    <div class="phase-label fade-in">Phase 3 — AI Planning</div>
+
+    <div class="node node--suggest fade-in">
+      <div class="node-header">
+        <span class="node-badge badge-purple">SUGGEST</span>
+        <span class="node-title">AI Generates Command Candidates</span>
+      </div>
+      <div class="node-desc">Based on saved context, the AI proposes a ranked list of next commands grouped by attack surface.</div>
+      <div class="tags">
+        <span class="tag">dir/vhost bruteforce</span>
+        <span class="tag">param fuzzing</span>
+        <span class="tag">JS recon</span>
+        <span class="tag">CVE matching</span>
+        <span class="tag">auth testing</span>
+        <span class="tag">CORS check</span>
+        <span class="tag">SSRF probe</span>
+        <span class="tag">SQLi scan</span>
+      </div>
+    </div>
+
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <!-- PREDICT — MOST IMPORTANT -->
+    <div class="phase-label fade-in" style="color: var(--red); opacity:0.8;">⚑ Phase 4 — Prediction Gate (Critical)</div>
+
+    <div class="node node--predict fade-in">
+      <div class="node-header">
+        <span class="node-badge badge-red">PREDICT</span>
+        <span class="node-title">AI Pre-Screens Each Candidate Command</span>
+      </div>
+      <div class="node-desc">Before anything runs, the AI simulates likely outcomes for each candidate — scoring risk, signal value, and path viability. Commands that would cause noise, crashes, rate-limits, or dead-ends are filtered out.</div>
+
+      <div class="predict-grid">
+        <div class="predict-card predict-card--safe">
+          <div class="predict-card-label"><span class="dot dot-green"></span> EXECUTE</div>
+          <div style="color:var(--text-muted)">High signal, low risk, within scope. Likely to yield useful output. Add to run queue.</div>
+        </div>
+        <div class="predict-card predict-card--warn">
+          <div class="predict-card-label"><span class="dot dot-yellow"></span> DEFER</div>
+          <div style="color:var(--text-muted)">May trigger WAF / rate limit. Useful but risky — defer until stealthier approach confirmed.</div>
+        </div>
+        <div class="predict-card predict-card--skip">
+          <div class="predict-card-label"><span class="dot dot-red"></span> SKIP</div>
+          <div style="color:var(--text-muted)">Dead-end, out-of-scope, crash risk, or forbidden by programme rules. Discarded.</div>
+        </div>
+      </div>
+
+      <div class="context-bubble" style="margin-top: var(--space-4); border-color: rgba(248,81,73,0.25); max-width:100%;">
+        <span class="context-bubble-icon">🛡️</span>
+        <span>AI checks: scope compliance · WAF presence · rate-limit risk · crash potential · stealth cost · estimated signal-to-noise ratio</span>
+      </div>
+    </div>
+
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <!-- EXEC -->
+    <div class="phase-label fade-in">Phase 5 — Execution</div>
+
+    <div class="node node--exec fade-in">
+      <div class="node-header">
+        <span class="node-badge badge-green">EXEC</span>
+        <span class="node-title">Run Best Command(s)</span>
+      </div>
+      <div class="node-desc">Only pre-screened, approved commands execute. Output is captured, parsed, and appended to <code style="color:var(--green)">project/recon/</code>. AI summarises findings in real-time.</div>
+      <div class="tags">
+        <span class="tag">stdout → file</span>
+        <span class="tag">error handling</span>
+        <span class="tag">timeout guard</span>
+        <span class="tag">rate limiter</span>
+        <span class="tag">scope re-check</span>
+        <span class="tag">context update</span>
+      </div>
+    </div>
+
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <!-- FLAG -->
+    <div class="phase-label fade-in">Phase 6 — Triage</div>
+
+    <div class="node node--flag fade-in">
+      <div class="node-header">
+        <span class="node-badge badge-orange">FLAG</span>
+        <span class="node-title">AI Evaluates &amp; Flags Findings</span>
+      </div>
+      <div class="node-desc">AI scores each result against known vuln patterns. Anything with bounty potential is flagged with severity, evidence path, and suggested next steps. Findings written to <code style="color:var(--orange)">project/findings/</code>.</div>
+      <div class="tags">
+        <span class="tag">CVSS estimate</span>
+        <span class="tag">PoC notes</span>
+        <span class="tag">reproduction steps</span>
+        <span class="tag">evidence saved</span>
+        <span class="tag">severity: Critical/High/Med/Low</span>
+      </div>
+    </div>
+
+    <!-- LOOP BACK with side pipe -->
+    <div class="arrow fade-in"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+
+    <div style="width:100%; max-width:680px; position:relative;">
+      <div class="node node--loop fade-in">
+        <div class="node-header" style="justify-content:center;">
+          <span class="node-badge badge-blue">LOOP</span>
+          <span class="node-title" style="font-size:var(--text-sm);">Deepen or Pivot — Back to Suggest</span>
+        </div>
+        <div class="node-desc" style="text-align:center; margin: 0 auto;">Context is richer. AI re-evaluates the attack surface and generates a new candidate list — progressively drilling toward high-value targets.</div>
+      </div>
+      <!-- Side pipe visual -->
+      <div style="position:absolute; right:-36px; top:0; bottom:0; width:24px;
+                  border: 2px dashed rgba(56,139,253,0.3);
+                  border-left:none;
+                  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+                  pointer-events:none;">
+      </div>
+      <div style="position:absolute; right:-88px; top:50%; transform:translateY(-50%) rotate(90deg);
+                  font-family:var(--font-mono); font-size:0.62rem; color:var(--blue);
+                  white-space:nowrap; letter-spacing:0.1em; pointer-events:none;">
+        LOOP ↑
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend fade-in" style="width:100%; max-width:680px;">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--green);"></div> Execution / Progress</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--blue);"></div> Recon / Loop</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--yellow);"></div> Persist Context</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--purple);"></div> AI Suggestion</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--red);"></div> Prediction Gate ★ Critical</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--orange);"></div> Triage &amp; Flagging</div>
+    </div>
+
+  </div><!-- /flow -->
+</div><!-- /page -->
+</body>
+</html>

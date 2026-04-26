@@ -1,6 +1,9 @@
 // ── AREA 4: Ollama Prompt Construction ────────────────────────────────────
 // Ollama runs locally at port 11434. All inference stays on-device — no data
 // leaves the machine. MODEL is the local llama3.2 checkpoint.
+const fs = require('fs');
+const path = require('path');
+
 const OLLAMA_URL = 'http://localhost:11434/api/generate';
 const MODEL = 'llama3.2';
 
@@ -116,4 +119,67 @@ async function generateScript(request, context) {
   return queryOllama(prompt);
 }
 
-module.exports = { explainOutput, answerQuery, generateScript };
+async function nextReconStep(context, project) {
+  try {
+    const reconDir = path.join(context.cwd, 'recon');
+    let reconData = '';
+    if (fs.existsSync(reconDir)) {
+      const files = fs.readdirSync(reconDir);
+      for (const file of files) {
+        if (fs.statSync(path.join(reconDir, file)).isFile()) {
+          const content = fs.readFileSync(path.join(reconDir, file), 'utf8');
+          reconData += `\n--- ${file} ---\n${content.slice(-2000)}\n`; // last 2k chars to save context window
+        }
+      }
+    }
+
+    const scopeStr = project.scope.domains.join(', ');
+
+    const prompt = `You are an automated AI Bug Bounty Recon agent. Your task is to propose the SINGLE next best bash command to run for enumeration and vulnerability discovery.
+You must strictly stay within the allowed scope: ${scopeStr}
+
+Current Working Directory: ${context.cwd}
+Recent History:
+${context.history.join('\n')}
+
+Previously gathered recon data:
+${reconData.slice(-4000)}
+
+Rules:
+1. Output MUST be redirected or appended to a file in the "recon/" or "findings/" directory. Example: "nmap -sV target.com > recon/nmap.txt" or "curl -s target.com | tee -a recon/curl.txt".
+2. The command MUST be a valid Linux bash command (e.g. curl, nmap, subfinder, python).
+3. Do NOT run interactive commands that require prompt answers.
+4. Keep the command non-destructive.
+5. If you found a vulnerability, output a command that writes a markdown draft to "findings/vuln_01.md".
+
+Respond strictly in JSON with this exact structure:
+{"command": "the bash command to run", "rationale": "one sentence explaining why"}
+Only return JSON. No markdown, no extra text.`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+
+    const response = await fetch(OLLAMA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, prompt, stream: false, format: 'json' }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
+    
+    const data = await response.json();
+    const text = data.response.trim();
+    const parsed = JSON.parse(text);
+
+    return { 
+      success: true, 
+      command: parsed.command, 
+      rationale: parsed.rationale 
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+module.exports = { explainOutput, answerQuery, generateScript, nextReconStep };

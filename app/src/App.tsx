@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
+import Dashboard, { type Project } from './Dashboard'
 import 'xterm/css/xterm.css'
 
 interface AiResult {
@@ -21,6 +22,7 @@ type PanelContent =
   | { type: 'explanation'; data: AiResult; command: string; risk: RiskAssessment }
   | { type: 'script'; data: ScriptResult; request: string; risk: RiskAssessment }
   | { type: 'error'; message: string }
+  | { type: 'reconStep'; data: { command: string; rationale: string; risk: RiskAssessment }; status: 'waiting' | 'executing' }
 
 function ScriptSaveButton({ script, request, cwd }: { script: string; request: string; cwd: string }) {
   const [saved, setSaved] = useState<string | null>(null)
@@ -48,9 +50,9 @@ function ScriptSaveButton({ script, request, cwd }: { script: string; request: s
       <button
         onClick={handleSave}
         style={{
-          background: '#1a3a2a',
-          border: '1px solid #2e7d6e',
-          color: '#4ec9b0',
+          background: 'rgba(255, 193, 7, 0.1)',
+          border: '1px solid rgba(255, 193, 7, 0.4)',
+          color: '#ffc107',
           padding: '6px 14px',
           borderRadius: '4px',
           fontSize: '11px',
@@ -87,6 +89,7 @@ export default function App() {
   const xtermRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const reconActiveRef = useRef(false)
   const prefixActiveRef = useRef(false)
   const lastContextRef = useRef<any>(null)
   const [panel, setPanel] = useState<PanelContent>({ type: 'idle' })
@@ -94,7 +97,9 @@ export default function App() {
   const [layout, setLayout] = useState<'right' | 'left' | 'top' | 'bottom'>(() => {
     return (localStorage.getItem('ai-panel-layout') as any) || 'right'
   })
-
+  
+  const [activeProject, setActiveProject] = useState<{ project: Project; dir: string } | null>(null)
+  
   const setAndSaveLayout = (l: 'right' | 'left' | 'top' | 'bottom') => {
     setLayout(l)
     localStorage.setItem('ai-panel-layout', l)
@@ -106,11 +111,13 @@ export default function App() {
   }, [panel])
 
   useEffect(() => {
+    if (!activeProject) return;
+
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
       fontFamily: 'monospace',
-      theme: { background: '#1e1e1e', foreground: '#d4d4d4' }
+      theme: { background: '#090909', foreground: '#f5f5f5', cursor: '#ffc107', selectionBackground: 'rgba(255, 193, 7, 0.3)' }
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -120,7 +127,7 @@ export default function App() {
 
     requestAnimationFrame(() => {
       fit.fit()
-      window.pty.start(term.cols, term.rows)
+      window.pty.start(term.cols, term.rows, activeProject.dir)
       window.pty.onData((data: string) => term.write(data))
       term.onData((data: string) => window.pty.write(data))
     })
@@ -139,6 +146,15 @@ export default function App() {
     // Auto-explain after every command
     window.pty.onContextReady((ctx) => {
       lastContextRef.current = ctx
+
+      // Recon mode hook
+      if (reconActiveRef.current) {
+        if (panelRef.current && prefixActiveRef.current === false) {
+           triggerReconStep();
+        }
+        return;
+      }
+
       if (prefixActiveRef.current) return
       console.log('Context captured:', ctx)
       if (!ctx.currentCommand) return
@@ -214,7 +230,7 @@ export default function App() {
       clearTimeout(resizeTimer)
       ro.disconnect()
     }
-  }, [])
+  }, [activeProject])
 
   const askAboutSelection = (text: string) => {
     setContextMenu(null)
@@ -231,73 +247,167 @@ export default function App() {
 
   const isHorizontal = layout === 'right' || layout === 'left'
 
+  const [isAutonomous, setIsAutonomous] = useState(false);
+  const [reconActive, setReconActive] = useState(false);
+
+  useEffect(() => {
+    reconActiveRef.current = reconActive;
+  }, [reconActive]);
+
+  // Trigger recon loops when enabled
+  useEffect(() => {
+    if (!reconActive) return;
+    triggerReconStep();
+  }, [reconActive]);
+
+  const triggerReconStep = () => {
+    if (!reconActive || !activeProject) return;
+    setPanel({ type: 'loading', command: 'Generating Next Phase...' });
+    const ctx = lastContextRef.current || { currentCommand: '', currentOutput: '', cwd: activeProject.dir, history: [] };
+    
+    ;(window as any).ai.nextReconStep(ctx, activeProject.project).then((res: any) => {
+      if (res.success) {
+        setPanel({ 
+          type: 'reconStep', 
+          data: { command: res.command, rationale: res.rationale, risk: res.risk || { tier: 'SAFE' } },
+          status: 'waiting'
+        });
+      } else {
+        setPanel({ type: 'error', message: res.error || 'Failed to determine next step.' });
+        setReconActive(false);
+      }
+    });
+  };
+
+  const executeReconCommand = (command: string) => {
+    setPanel((prev) => (prev.type === 'reconStep' ? { ...prev, status: 'executing' } : prev));
+    window.pty.write(command + '\r');
+  };
+
+  // If Autonomous mode is on, run after a short delay
+  useEffect(() => {
+    if (reconActive && isAutonomous && panel.type === 'reconStep' && panel.status === 'waiting') {
+      const timer = setTimeout(() => {
+         executeReconCommand(panel.data.command);
+      }, 5000); // 5 sec predict gate delay for user to panic-cancel
+      return () => clearTimeout(timer);
+    }
+  }, [reconActive, isAutonomous, panel]);
+
   const layoutButtons = (
-    <div style={{ display: 'flex', gap: '4px' }}>
-      {(['left', 'right', 'top', 'bottom'] as const).map(pos => (
-        <button
-          key={pos}
-          onClick={() => setAndSaveLayout(pos)}
-          style={{
-            background: layout === pos ? '#3a3a3a' : 'transparent',
-            border: '1px solid ' + (layout === pos ? '#555' : '#2a2a2a'),
-            color: layout === pos ? '#aaa' : '#444',
-            borderRadius: '3px',
-            padding: '2px 6px',
-            fontSize: '11px',
-            cursor: 'pointer',
-            lineHeight: 1
-          }}
-        >
-          {pos === 'left' ? '⬅' : pos === 'right' ? '➡' : pos === 'top' ? '⬆' : '⬇'}
-        </button>
-      ))}
+    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginRight: '8px' }}>
+        <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: reconActive ? '#da3633' : '#3fb950', boxShadow: reconActive ? '0 0 6px #da3633' : '0 0 6px #3fb950' }} />
+        <span style={{ fontSize: '10px', fontWeight: 'bold', color: '#8b949e', letterSpacing: '0.05em' }}>
+          {reconActive ? 'ENGAGED' : 'STANDBY'}
+        </span>
+      </div>
+      <button
+        onClick={() => setReconActive(!reconActive)}
+        style={{
+          background: reconActive ? '#da3633' : '#238636',
+          border: '1px solid rgba(240, 246, 252, 0.1)',
+          color: '#fff',
+          fontSize: '11px',
+          fontWeight: 'bold',
+          padding: '4px 10px',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          letterSpacing: '0.02em',
+          boxShadow: reconActive ? '0 0 8px rgba(218, 54, 51, 0.3)' : '0 0 8px rgba(35, 134, 54, 0.3)'
+        }}
+      >
+        {reconActive ? 'HALT RECON' : 'START RECON'}
+      </button>
+      <label style={{ fontSize: '11px', color: '#c9d1d9', display: 'flex', alignItems: 'center', gap: '4px', marginRight: '16px', fontWeight: 'bold', cursor: 'pointer' }}>
+        <input 
+          type="checkbox" 
+          checked={isAutonomous} 
+          onChange={(e) => setIsAutonomous(e.target.checked)} 
+          title="Autonomously execute tasks without asking for permission (Prediction Gate off)"
+          style={{ accentColor: '#3fb950', width: '14px', height: '14px', cursor: 'pointer', margin: 0 }}
+        />
+        AUTO
+      </label>
+      <div style={{ display: 'flex', gap: '2px', borderLeft: '1px solid #30363d', paddingLeft: '16px' }}>
+        {(['left', 'right', 'top', 'bottom'] as const).map(pos => (
+          <button
+            key={pos}
+            onClick={() => setAndSaveLayout(pos)}
+            style={{
+              background: layout === pos ? 'rgba(255, 193, 7, 0.2)' : '#141414',
+              border: '1px solid ' + (layout === pos ? 'rgba(255, 193, 7, 0.6)' : 'rgba(255, 193, 7, 0.2)'),
+              color: layout === pos ? '#ffc107' : '#8b949e',
+              borderRadius: '3px',
+              padding: '2px 7px',
+              fontSize: '11px',
+              cursor: 'pointer',
+              lineHeight: 1
+            }}
+          >
+            {pos.toUpperCase()}
+          </button>
+        ))}
+      </div>
     </div>
   )
+
+  if (!activeProject) {
+    return <Dashboard onSelectProject={(project, dir) => setActiveProject({ project, dir })} />;
+  }
 
   return (
     <div style={{
       display: 'flex',
       flexDirection: layout === 'top' ? 'column-reverse' : layout === 'bottom' ? 'column' : layout === 'left' ? 'row-reverse' : 'row',
       height: '100vh',
-      background: '#1e1e1e',
-      color: '#d4d4d4',
-      fontFamily: 'monospace',
+      background: 'linear-gradient(165deg, #0a0a0a 0%, #111111 100%)',
+      color: '#f5f5f5',
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
       overflow: 'hidden'
     }}>
       {/* Terminal Panel */}
-      <div style={{ flex: 1, padding: '8px', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ fontSize: '10px', color: '#444', marginBottom: '4px', paddingLeft: '4px', letterSpacing: '0.1em' }}>
-          TERMINAL
+      <div style={{ flex: 1, padding: '10px', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+          <div style={{ fontSize: '10px', color: '#d6bf73', paddingLeft: '4px', letterSpacing: '0.1em' }}>
+            TERMINAL — {activeProject.project.name}
+          </div>
+          <button 
+            onClick={() => setActiveProject(null)} 
+            style={{ background: 'rgba(255, 193, 7, 0.08)', border: '1px solid rgba(255, 193, 7, 0.2)', color: '#ffe082', fontSize: '10px', padding: '3px 8px', borderRadius: '4px', cursor: 'pointer' }}
+          >
+            Back To Dashboard
+          </button>
         </div>
         <div ref={termRef} style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }} />
       </div>
 
       {/* Divider */}
-      <div style={{ [isHorizontal ? 'width' : 'height']: '1px', background: '#2a2a2a', flexShrink: 0 }} />
+      <div style={{ [isHorizontal ? 'width' : 'height']: '1px', background: 'rgba(255, 193, 7, 0.15)', flexShrink: 0 }} />
 
       {/* AI Panel */}
       <div style={{
         [isHorizontal ? 'width' : 'height']: isHorizontal ? '420px' : '45vh',
         display: 'flex',
         flexDirection: 'column',
-        background: '#1e1e1e',
+        background: 'linear-gradient(180deg, #141414 0%, #0e0e0e 100%)',
         flexShrink: 0
       }}>
-        <div style={{ padding: '8px 14px', borderBottom: '1px solid #2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-          <div style={{ fontSize: '10px', color: '#444', letterSpacing: '0.1em', flexShrink: 0 }}>
-            AI ASSISTANT — <span style={{ color: '#3a6a9a' }}>@question</span> <span style={{ color: '#333' }}>|</span> <span style={{ color: '#2e7d6e' }}>#script</span>
+        <div style={{ padding: '8px 14px', borderBottom: '1px solid rgba(255, 193, 7, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+          <div style={{ fontSize: '10px', color: '#d6bf73', letterSpacing: '0.1em', flexShrink: 0 }}>
+            AI OPERATOR — <span style={{ color: '#ffc107' }}>@question</span> <span style={{ color: 'rgba(255, 193, 7, 0.4)' }}>|</span> <span style={{ color: '#ffe082' }}>#script</span>
           </div>
           {layoutButtons}
         </div>
         <div ref={panelRef} style={{ flex: 1, overflowY: 'auto', padding: '14px' }}>
           {panel.type === 'idle' && (
-            <div style={{ color: '#383838', fontSize: '12px', marginTop: '60px', textAlign: 'center' }}>
+            <div style={{ color: '#b7b7b7', fontSize: '12px', marginTop: '60px', textAlign: 'center' }}>
               Run a command to see an AI explanation.
             </div>
           )}
 
           {panel.type === 'loading' && (
-            <div style={{ color: '#3a6a9a', fontSize: '12px', marginTop: '60px', textAlign: 'center' }}>
+            <div style={{ color: '#ffc107', fontSize: '12px', marginTop: '60px', textAlign: 'center' }}>
               Analysing {panel.command ? `'${panel.command}'` : ''}...
             </div>
           )}
@@ -310,48 +420,48 @@ export default function App() {
 
           {panel.type === 'explanation' && (
             <div style={{ fontSize: '12px', lineHeight: '1.7' }}>
-              <div style={{ color: '#3a6a9a', marginBottom: '14px', fontSize: '12px' }}>
+              <div style={{ color: '#ffc107', marginBottom: '14px', fontSize: '12px' }}>
                 $ {panel.command}
               </div>
               <RiskBanner risk={panel.risk} />
-              <Section title="Explanation" color="#c0c0c0" content={panel.data.explanation} />
-              <Section title="Security Implications" color="#8a6a50" content={panel.data.security_implications} />
-              <Section title="Next Steps" color="#2e7d6e" content={panel.data.next_steps} />
+              <Section title="Explanation" color="#f5f5f5" content={panel.data.explanation} />
+              <Section title="Security Implications" color="#ffc107" content={panel.data.security_implications} />
+              <Section title="Next Steps" color="#ffe082" content={panel.data.next_steps} />
             </div>
           )}
 
           {panel.type === 'script' && (
             <div style={{ fontSize: '12px', lineHeight: '1.7' }}>
-              <div style={{ color: '#2e7d6e', marginBottom: '14px', fontSize: '12px' }}>
+              <div style={{ color: '#ffe082', marginBottom: '14px', fontSize: '12px' }}>
                 # {panel.request}
               </div>
               <RiskBanner risk={panel.risk} />
-              <Section title="Description" color="#c0c0c0" content={panel.data.description} />
+              <Section title="Description" color="#f5f5f5" content={panel.data.description} />
               {panel.data.warning && (
-                <Section title="Warning" color="#8b3333" content={panel.data.warning} />
+                <Section title="Warning" color="#ff9090" content={panel.data.warning} />
               )}
               <div style={{ marginTop: '14px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                  <div style={{ color: '#383838', fontSize: '10px', letterSpacing: '0.1em' }}>SCRIPT — copy and run manually</div>
+                  <div style={{ color: '#b7b7b7', fontSize: '10px', letterSpacing: '0.1em' }}>SCRIPT — copy and run manually</div>
                   <button
                     onClick={() => navigator.clipboard.writeText(panel.data.script)}
                     style={{
                       background: 'transparent',
-                      border: '1px solid #333',
-                      color: '#555',
+                      border: '1px solid rgba(255, 193, 7, 0.3)',
+                      color: '#ffe082',
                       fontSize: '10px',
                       padding: '2px 8px',
                       borderRadius: '3px',
                       cursor: 'pointer',
                       fontFamily: 'monospace'
                     }}
-                    onMouseEnter={e => (e.currentTarget.style.color = '#888')}
-                    onMouseLeave={e => (e.currentTarget.style.color = '#555')}
+                    onMouseEnter={e => (e.currentTarget.style.color = '#ffc107')}
+                    onMouseLeave={e => (e.currentTarget.style.color = '#ffe082')}
                   >
                     copy
                   </button>
                 </div>
-                <pre style={{ background: '#191919', padding: '12px', borderRadius: '3px', overflowX: 'auto', color: '#ce9178', fontSize: '11px', margin: 0, lineHeight: '1.6' }}>
+                <pre style={{ background: '#090909', border: '1px solid rgba(255, 193, 7, 0.2)', padding: '12px', borderRadius: '3px', overflowX: 'auto', color: '#f5f5f5', fontSize: '11px', margin: 0, lineHeight: '1.6' }}>
                   {panel.data.script}
                 </pre>
               </div>
@@ -362,6 +472,56 @@ export default function App() {
               />
             </div>
           )}
+
+          {panel.type === 'reconStep' && (
+            <div style={{ fontSize: '12px', lineHeight: '1.7', border: '1px solid #3fb950', padding: '16px', borderRadius: '8px', background: '#0d1117', boxShadow: '0 4px 16px rgba(0,0,0,0.4)', position: 'relative' }}>
+              <div style={{ position: 'absolute', top: '-10px', left: '12px', background: '#3fb950', color: '#0d1117', padding: '2px 8px', fontSize: '10px', fontWeight: 'bold', borderRadius: '4px', letterSpacing: '0.05em' }}>
+                AI PREDICTION GATE
+              </div>
+              <RiskBanner risk={panel.data.risk} />
+              
+              <div style={{ marginTop: '16px', marginBottom: '12px' }}>
+                <div style={{ color: '#8b949e', fontSize: '10px', letterSpacing: '0.1em', marginBottom: '8px', textTransform: 'uppercase' }}>PROPOSED ACTION</div>
+                <div style={{ background: '#161b22', border: '1px solid #30363d', padding: '12px', borderRadius: '6px', color: '#58a6ff', fontFamily: 'monospace', fontSize: '13px' }}>
+                  {panel.data.command}
+                </div>
+              </div>
+              
+              <Section title="Rationale (Why?)" color="#c9d1d9" content={panel.data.rationale} />
+              
+              <div style={{ marginTop: '20px', display: 'flex', gap: '12px', alignItems: 'center', borderTop: '1px solid #21262d', paddingTop: '16px' }}>
+                {panel.status === 'waiting' ? (
+                  <>
+                    <button 
+                      onClick={() => executeReconCommand(panel.data.command)}
+                      style={{ padding: '8px 16px', background: '#238636', border: '1px solid rgba(240, 246, 252, 0.1)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontFamily: 'inherit', fontSize: '12px' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#2ea043'}
+                      onMouseLeave={e => e.currentTarget.style.background = '#238636'}
+                    >
+                      EXECUTE ACTION
+                    </button>
+                    <button 
+                      onClick={() => { setReconActive(false); setPanel({ type: 'idle' }); }}
+                      style={{ padding: '8px 16px', background: '#da3633', border: '1px solid rgba(240, 246, 252, 0.1)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontFamily: 'inherit', fontSize: '12px' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f85149'}
+                      onMouseLeave={e => e.currentTarget.style.background = '#da3633'}
+                    >
+                      ABORT
+                    </button>
+                    {isAutonomous && <span style={{color: '#8b949e', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px'}}>
+                      <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#d29922' }} />
+                      Executing automatically in ~5s...
+                    </span>}
+                  </>
+                ) : (
+                  <span style={{ color: '#3fb950', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '4px', background: '#3fb950' }} />
+                    EXECUTING COMMAND...
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -370,24 +530,24 @@ export default function App() {
           position: 'fixed',
           top: contextMenu.y,
           left: contextMenu.x,
-          background: '#252525',
-          border: '1px solid #333',
+          background: '#141414',
+          border: '1px solid rgba(255, 193, 7, 0.4)',
           borderRadius: '4px',
           padding: '4px 0',
           zIndex: 9999,
           minWidth: '160px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)'
         }}>
           <div
             onClick={() => askAboutSelection(contextMenu.text)}
             style={{
               padding: '6px 14px',
               fontSize: '12px',
-              color: '#ccc',
+              color: '#ffe082',
               cursor: 'pointer',
               fontFamily: 'monospace'
             }}
-            onMouseEnter={e => (e.currentTarget.style.background = '#2e2e2e')}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255, 193, 7, 0.15)')}
             onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
           >
             Ask AI about selection
@@ -405,9 +565,9 @@ function RiskBanner({ risk }: { risk: { tier: string; message?: string } }) {
     <div style={{
       padding: '8px 12px',
       marginBottom: '14px',
-      borderLeft: `2px solid ${isDanger ? '#8b2222' : '#7a6000'}`,
-      background: isDanger ? '#2a1010' : '#1e1a00',
-      color: isDanger ? '#cc4444' : '#aa8800',
+      borderLeft: `2px solid ${isDanger ? '#f05f5f' : '#ffd78a'}`,
+      background: isDanger ? '#381316' : '#33280f',
+      color: isDanger ? '#ff9b9b' : '#ffd78a',
       fontSize: '11px',
       lineHeight: '1.5'
     }}>
@@ -420,7 +580,7 @@ function Section({ title, color, content }: { title: string; color: string; cont
   const displayed = useTypewriter(content)
   return (
     <div style={{ marginBottom: '16px' }}>
-      <div style={{ color: '#383838', fontSize: '10px', letterSpacing: '0.1em', marginBottom: '4px' }}>{title.toUpperCase()}</div>
+      <div style={{ color: '#b7b7b7', fontSize: '10px', letterSpacing: '0.1em', marginBottom: '4px' }}>{title.toUpperCase()}</div>
       <div style={{ color }}>{displayed}</div>
     </div>
   )

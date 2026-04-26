@@ -4,6 +4,7 @@ const fs = require("fs");
 const pty = require("node-pty");
 const ollama = require('./ollama.cjs');
 const safeguard = require('./safeguard.cjs');
+const bbStore = require('./store.cjs');
 
 let mainWindow;
 let shellPty;
@@ -25,6 +26,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1300,
     height: 800,
+    icon: path.join(__dirname, "../public/bug.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -43,16 +45,19 @@ function createWindow() {
 
 app.whenReady().then(createWindow);
 
-ipcMain.on("pty:start", (_event, { cols, rows } = {}) => {
+ipcMain.on("pty:start", (_event, { cols, rows, cwd } = {}) => {
   if (shellPty) return;
 
   const shell = process.env.SHELL || "bash";
+  const startCwd = cwd || process.env.HOME;
+  
+  sessionContext.cwd = startCwd;
 
   shellPty = pty.spawn(shell, [], {
     name: "xterm-color",
     cols: cols || 120,
     rows: rows || 30,
-    cwd: process.env.HOME,
+    cwd: startCwd,
     env: process.env,
   });
 
@@ -213,6 +218,14 @@ ipcMain.handle('ai:script', async (_event, { input, context }) => {
   return result;
 });
 
+ipcMain.handle('ai:nextReconStep', async (_event, { context, project }) => {
+  const result = await ollama.nextReconStep(context, project);
+  if (result.success) {
+    result.risk = safeguard.assessRisk(result.command, result.command);
+  }
+  return result;
+});
+
 ipcMain.handle('script:save', async (_event, { script, filename, cwd }) => {
   try {
     const resolvedCwd = cwd.startsWith('~')
@@ -231,3 +244,10 @@ ipcMain.handle('script:save', async (_event, { script, filename, cwd }) => {
     return { success: false, error: err.message }
   }
 });
+
+// BugBounty Store
+ipcMain.handle('bb:getProjects', () => bbStore.getProjects());
+ipcMain.handle('bb:createProject', (_event, { name, scopeStr }) => bbStore.createProject(name, scopeStr));
+ipcMain.handle('bb:updateProjectStatus', (_event, { id, status }) => bbStore.updateProjectStatus(id, status));
+ipcMain.handle('bb:getProjectDir', (_event, { name }) => bbStore.getProjectDir(name));
+ipcMain.handle('bb:generateReport', (_event, { name }) => bbStore.generateReport(name));

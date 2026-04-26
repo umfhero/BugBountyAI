@@ -14,7 +14,7 @@ interface AiQueryPayload {
 }
 
 interface PtyApi {
-  start: (cols?: number, rows?: number) => void;
+  start: (cols?: number, rows?: number, cwd?: string) => void;
   write: (input: string) => void;
   onData: (callback: (data: string) => void) => void;
   onContextReady: (callback: (ctx: SessionContext) => void) => void;
